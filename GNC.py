@@ -37,7 +37,6 @@ import os
 import time
 from uptime import uptime
 
-
 # Math
 import math
 import numpy as np
@@ -61,9 +60,14 @@ import config as cf
 from CA_functions import getDistanceAngle
 
 
+os.system('source ~/Desktop/SWARM/devel/setup.bash')
+
+
 '''
 '------------------------------------------------------------------------------------------------------------------------
+'
 '    Toolbox
+'
 '------------------------------------------------------------------------------------------------------------------------
 '''
 
@@ -127,11 +131,71 @@ def has_reached_waypoint3D(wi, pos, radius = .5):
     '''
     return npla.norm(np.array(wi)-np.array(pos)) < radius
 
+def unit_vector(vector):
+    """ Returns the unit vector of the vector.  """
+    return np.array(vector) / npla.norm(np.array(vector))
 
+def angle_between(v1, v2):
+    """ Returns the angle in radians between vectors 'v1' and 'v2' """
+    return np.arccos(np.clip(np.dot(unit_vector(np.array(v1)), unit_vector(np.array(v2))), -1.0, 1.0))
 
-    
+def isEqual(u,v, eps_scalar = 1e-2, eps_angle = 5.):
+    '''
+    returns whether u and v are almost equal.
+    - eps: if u,v are scalars, then eps is the absolute difference
+    - eps_angle: IN DEGREES, max angle between vectors (n-dim, n>1) for them to be equal.
+    '''
+    try:
+        return abs( angle_between(u,v) ) < eps_angle *np.pi/180.
+    except:
+        return abs( u-v ) < eps_scalar
+    return
 
+def change_altitude(new_alt):
+    global vehicle
+    chg_alt = LocationGlobalRelative( vehicle.location.global_relative_frame.lat , vehicle.location.global_relative_frame.lon ,new_alt)
+    vehicle.simple_goto(chg_alt)
+    return
 
+def change_yaw(heading, relative=False):
+    global vehicle
+    if relative:
+        is_relative=1 #yaw relative to direction of travel
+    else:
+        is_relative=0 #yaw is an absolute angle
+    # create the CONDITION_YAW command using command_long_encode()
+    msg = vehicle.message_factory.command_long_encode(
+        0, 0,    # target system, target component
+        mavutil.mavlink.MAV_CMD_CONDITION_YAW, #command
+        0, #confirmation
+        heading,    # param 1, yaw in degrees
+        0,          # param 2, yaw speed deg/s
+        1,          # param 3, direction -1 ccw, 1 cw
+        is_relative, # param 4, relative offset 1, absolute angle 0
+        0, 0, 0)    # param 5 ~ 7 not used
+    # send command to vehicle
+    vehicle.send_mavlink(msg)
+    return
+
+def change_ned_velocity(velocicty_x, veloity_y, velocity_z):
+    """
+    Move vehicle in direction based on specified velocity vectors.
+    """
+    msg = vehicle.message_factory.set_position_target_local_ned_encode(
+        0,       # time_boot_ms (not used)
+        0, 0,    # target system, target component
+        mavutil.mavlink.MAV_FRAME_LOCAL_NED, # frame
+        0b0000111111000111, # type_mask (only speeds enabled)
+        0, 0, 0, # x, y, z positions (not used)
+        velocity_x, velocity_y, velocity_z, # x, y, z velocity in m/s
+        0, 0, 0, # x, y, z acceleration (not supported yet, ignored in GCS_Mavlink)
+        0, 0)    # yaw, yaw_rate (not supported yet, ignored in GCS_Mavlink)
+    vehicle.send_mavlink(msg)
+    return
+
+def convert_velocity(heading, groundspeed):
+    vel = np.array(np.cos(heading), np.sin(heading), 0)
+    return groundspeed*np.cos(heading), groundspeed*np.sin(heading), 0.
 
 
 '''
@@ -140,7 +204,7 @@ def has_reached_waypoint3D(wi, pos, radius = .5):
 '------------------------------------------------------------------------------------------------------------------------
 '''
 
-def callback_TaskManager(data): #TODO subcribe to TC, SA, MC
+def callback_TaskManager(data):
     '''
     Task Manager: 
     - enable/disable functionalities with respect to miscellaneous cases.
@@ -153,66 +217,18 @@ def callback_TaskManager(data): #TODO subcribe to TC, SA, MC
     try:
         if not agent.enable_agent:
             # Disable all functionalities at the same time (first level of safety)
-            agent.clear_pause = False
             agent.clear_ca = False
             agent.clear_wp = False
             agent.release = False
         else:
-            if agent.clear_pause:
-                # Disable all functionalities except pause when pause ordered
-                agent.clear_ca = False
+            if agent.clear_ca :
+                # Disable functionalities when collision avoidance is triggered
                 agent.clear_wp = False
-                agent.release = False
+                agent.release = False                
             else:
-                if agent.clear_ca :
-                    # Disable functionalities when collision avoidance is triggered
-                    agent.clear_wp = False
-                    agent.release = False                
-                else:
-                    agent.clear_wp = True
-                    agent.release = True
+                agent.clear_wp = True
+                agent.release = True
         
-
-            pass
-    except rospy.ROSInterruptException:
-        pass
-
-
-def callback_wp(data):
-    '''
-    Waypoint following
-    TODO: make sure command is meant for this agent
-    #TODO : extend "==" to "almost equal", same for "!=" : heading & vel
-    # TODO: velocity returned as a vector (dir = heading; norm = as defined) in carrot chasing above
-    '''
-    global vehicle, agent
-    try:
-        if agent.clear_wp and agent.action.type == "wp":
-            # check if next waypoint reached & update waypoints
-            iWP = agent.action.iWP
-
-            # start with the appropriate altitude
-            if iWP == 0:
-                vehicle.simple_goto() # TODO use the wp loc in the drone's frame (known as NED, not WF)
-
-            # Carrot chasing
-            new_heading , new_groundspeed = calc_heading_speed(agent.action.wp[iWP-1],agent.action.wp[iWP],agent.pos, agent.heading, agent.groundspeed)
-            # Update heading & vel in this order
-            if vehicle.heading != new_heading:
-                vehicle.heading = new_heading
-            else:
-                vehicle.groundspeed = new_groundspeed
-
-            if iWP < len(agent.action.wp)-1 and has_reached_waypoint2D(agent.action.wp[iWP], agent.pos):
-                agent.action.iWP += 1
-                
-
-            # debug
-            if cf.debug_GNC_wp :
-                # rospy.loginfo(agent.ned_from_start)
-                pass
-
-            rate.sleep()
 
             pass
     except rospy.ROSInterruptException:
@@ -221,6 +237,7 @@ def callback_wp(data):
 def callback_VehicleState(data):
     '''
     Import vehicle state from pixhawk and publishes vehicle states to ros
+    TODO: check if groundspeed is read as it should be
     '''
     global vehicle, agent
 
@@ -234,15 +251,16 @@ def callback_VehicleState(data):
         # Update location
         agent.ned_from_start = vehicle.location.local_frame  # (north, east, down) from init loc
         agent.pos = NED2WF(agent.ned_from_start)
-
-        # Update velocity
-        agent.velocity = vehicle.velocity
-        agent.groundspeed = npla.norm(np.array(agent.velocity[:2]))
+        agent.alt = vehicle.location.global_relative_frame.alt
 
         # Update attitude
         agent.ned_attitude = vehicle.attitude
         agent.attitude = agent.ned_attitude
         agent.heading = vehicle.heading
+
+        # Update velocity
+        agent.velocity = vehicle.velocity
+        agent.groundspeed = vehicle.groundspeed # npla.norm(np.array(agent.velocity[:2]))
 
         # Publish updated state
         pub_agent_GNC2SA.publish(agent)
@@ -256,6 +274,66 @@ def callback_VehicleState(data):
         rate.sleep()
 
         pass
+    except rospy.ROSInterruptException:
+        pass
+
+def callback_VehicleState_update_MP(agent_MP2GNC):
+    '''
+    Import mission-related parameters (mission_state, actions, etc.)
+    '''
+    global vehicle, agent
+    try:
+        # Update mission state
+        agent.mission_state = agent_MP2GNC.mission_state
+
+        # Update action
+        agent.action = agent_MP2GNC.action
+
+        # Update pos_est (estimated position from SA via MP)
+        agent.pos_est = agent_MP2GNC.pos_est
+
+        rate.sleep()
+        pass
+    except rospy.ROSInterruptException:
+        pass
+
+
+def callback_wp(data):
+    '''
+    Waypoint following
+    TODO: make sure command is meant for this agent
+    #TODO : extend "==" to "almost equal", same for "!=" : heading & vel
+    '''
+    global vehicle, agent
+    try:
+        if agent.clear_wp and agent.action.cmd == "wp":
+            # check if next waypoint reached & update waypoints
+            iWP = agent.action.iWP
+
+            # reach Wi+1's altitude first
+            if not isEqual( agent.alt , agent.action.wp[iWP][2], eps_scalar=2e-1):
+                change_altitude(abs(agent.action.wp[iWP][2])) ######################################### careful about altitude NED & LocalGlobalWhatev
+            # move towards Wi+1 then, horizontally
+            else:
+                # Carrot chasing
+                new_heading , new_groundspeed = calc_heading_speed(agent.action.wp[iWP-1],agent.action.wp[iWP],agent.pos, agent.heading, agent.groundspeed)
+                # Update heading & vel, in this order
+                if not isEqual( vehicle.heading , new_heading , eps_scalar=5.*np.pi/180. ):
+                    change_yaw(new_heading)
+                else:
+                    vehicle.groundspeed = new_groundspeed
+
+            if iWP < len(agent.action.wp)-1 and has_reached_waypoint3D(agent.action.wp[iWP], agent.ned_from_start):
+                agent.action.iWP += 1
+                
+            # debug
+            if cf.debug_GNC_wp :
+                # rospy.loginfo(new_heading)
+                # rospy.loginfo(new_groundspeed)
+                pass
+
+            rate.sleep()
+            pass
     except rospy.ROSInterruptException:
         pass
 
@@ -345,14 +423,14 @@ if __name__ == "__main__":
 
     # Setup mode
     vehicle.mode = VehicleMode("GUIDED")
+    print(" Waiting for vehicle to initialise...")
     while not vehicle.is_armable:
-        print(" Waiting for vehicle to initialise...")
         time.sleep(.5)
 
     # Arm vehicle
     vehicle.armed = True
+    print(" Waiting for arming...")
     while not vehicle.armed:
-        print(" Waiting for arming...")
         time.sleep(.5)
     time.sleep(1)
 
@@ -376,7 +454,7 @@ if __name__ == "__main__":
     agent.pos_offset = Float32MultiArray(data = cf.POS_OFFSET)
 
     # wp following
-    iWP = 1
+    iWP = 0
 
     
 
@@ -394,7 +472,7 @@ if __name__ == "__main__":
     # ts_GNCTaskManager = message_filters.TimeSynchronizer([message_filters.Subscriber('SA', String),
     #                                        message_filters.Subscriber('TC', String)], 10)
     # ts_GNCTaskManager.registerCallback(callback_GNCTaskManager)
-    rospy.Subscriber("time",Float64,callback_TaskManager)
+    # rospy.Subscriber("time",Float64,callback_TaskManager)
 
 
     # VEHICLE STATE
@@ -403,24 +481,28 @@ if __name__ == "__main__":
     # ts_VehicleState.registerCallback(callback_VehicleState)
     rospy.Subscriber("time",Float64,callback_VehicleState)
 
+    # VEHICLE STATE _ update from MP
+    #####################
+    rospy.Subscriber("agent_MP2GNC",Agent , callback_VehicleState_update_MP)
+
 
     # WAYPOINT FOLLOWING
     ###############
     # ts_VehicleState = message_filters.TimeSynchronizer(message_filters.Subscriber('clock/time', Float64),10)
     # ts_VehicleState.registerCallback(callback_VehicleState)
-    rospy.Subscriber("time",Float64,callback_wp)
+    # rospy.Subscriber("time",Float64,callback_wp)
 
 
     # COLISION AVOIDANCE
     #####################
     # ts_CollisionAvoidance = message_filters.TimeSynchronizer(message_filters.Subscriber('bbox_position2', Float64),10)
     # ts_CollisionAvoidance.registerCallback(callback_CollisionAvoidance)
-    rospy.Subscriber("bbox_position2", multipositions, callback_CollisionAvoidance)
+    # rospy.Subscriber("bbox_position2", multipositions, callback_CollisionAvoidance)
 
 
     # TEST
     #####################
-    rospy.Subscriber("time",Float64, callback_Test)
+    # rospy.Subscriber("time",Float64, callback_Test)
 
 
 
