@@ -1,2 +1,2 @@
 # DroneAlgos
-Group design project drone algorithms
+Stores fles used for swarm group design project
